@@ -1,6 +1,6 @@
 fire
-torch==2.6.0
-transformers==4.52.1
+torch>=2.6.0
+transformers>=4.52.1
 datasets
 tokenizers
 tabulate
