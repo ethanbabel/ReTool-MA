@@ -9,6 +9,9 @@ latex_src/report.fls
 latex_src/report.pdf
 latex_src/report.synctex.gz
 
-# Ignore project context files
-project_context/*
+# Ignore extra project context files
+project_context/*.pdf
+project_context/sources/Learning-to-Use-Tools-via-Cooperative-and-Interactive-Agents-with-LLMs.pdf
+project_context/sources/NeurIPS-2024-agile-a-novel-reinforcement-learning-framework-of-llm-agents-Paper-Conference.pdf
+project_context/sources/NeurIPS-2024-avatar-optimizing-llm-agents-for-tool-usage-via-contrastive-reasoning-Paper-Conference.pdf
 
