@@ -17,3 +17,6 @@ project_context/sources/NeurIPS-2024-avatar-optimizing-llm-agents-for-tool-usage
 
 # Ignore local models
 models/*
+
+# Ignore .env
+.env
