@@ -15,3 +15,5 @@ project_context/sources/Learning-to-Use-Tools-via-Cooperative-and-Interactive-Ag
 project_context/sources/NeurIPS-2024-agile-a-novel-reinforcement-learning-framework-of-llm-agents-Paper-Conference.pdf
 project_context/sources/NeurIPS-2024-avatar-optimizing-llm-agents-for-tool-usage-via-contrastive-reasoning-Paper-Conference.pdf
 
+# Ignore local models
+models/*
