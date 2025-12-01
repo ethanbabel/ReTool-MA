@@ -1,0 +1,6 @@
+# Ignore latex files (for now)
+latex_src/*
+
+# Ignore project context files
+project_context/*
+
