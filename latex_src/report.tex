@@ -1,0 +1,76 @@
+\documentclass{article}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{natbib}
+\bibliographystyle{plainnat}
+
+\title{Machine Learning: Reinforcement Learning Final Project Report}
+
+\author{Ethan Babel}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+  Placeholder for the project abstract. Summarize the research motivation, the ReTool-MA contribution, and key findings once the work is complete.
+\end{abstract}
+
+\section{Introduction}
+Placeholder for the introduction. Outline the motivation, problem setting, and the roadmap for the rest of the report.
+
+\section{ReTool: Paper Summary}
+This section summarizes the ReTool: Reinforcement Learning for Strategic Tool Use in LLMs paper 
+\citep{feng2025retoolreinforcementlearningstrategic}, which introduces a reinforcement learning (RL) 
+framework that tightly integrates code interpreter (CI) tool use into the reasoning process of large 
+language models (LLMs).
+
+\subsection{ReTool Motivation}
+Reasoning-focused LLMs trained with RL perform well on text-only
+tasks but struggle on problems that demand precise computation, symbolic manipulation, 
+or geometric reasoning. Purely textual reasoning often accumulates errors over long horizons, 
+whereas code interpreters can provide exact numeric validation and programmatic exploration. 
+Recent research has explored both prompting and supervised fine-tuning (SFT) based approaches to 
+encourage tool use in LLMs, however these efforts have shown to generalize quite poorly. 
+ReTool targets this gap by training an LLM to decide when and how to call tools, utilize code 
+execution with natural language reasoning, and refine its strategy through outcome-driven RL.
+
+\subsection{ReTool Methodology}
+ReTool follows a two-stage pipeline. First, a cold-start SFT stage uses 
+a curated synthetic dataset of code-augmented reasoning traces to bootstrap 
+tool-calling competence. Second, an PPO-based RL stage rolls out trajectories 
+that interleave natural language reasoning with code execution inside a sandboxed CI. 
+The policy receives interpreter outputs (including errors) and continues generation, 
+enabling iterative refinement and code self-correction.
+
+During rollouts, code snippets are delimited with \texttt{<code>} tags. When a closing 
+tag appears, the snippet is executed and feedback is inserted in \texttt{<interpreter>} 
+tags before generation resumes. The reward is a simple rule-based accuracy signal 
+(+1 for correct answers in a required format such as \verb|\\boxed{}|, -1 otherwise), 
+avoiding reward hacking while encouraging diverse strategies. 
+
+\subsection{ReTool Results}
+On the AIME 2024 and 2025 math benchmarks, ReTool substantially outperforms text-only RL 
+baselines and other public tool-use systems. With Qwen2.5--32B-Instruct, ReTool achieves 
+67.0\% (AIME 2024) and 49.3\% (AIME 2025) after only 400 training steps, compared to 40.0\% 
+and 36.7\% for a text-based RL baseline that needs over 1{,}000 steps. Using a stronger 
+backbone (DeepSeek-R1-Distill-Qwen-32B), ReTool reaches 72.5\% and 54.3\% on AIME 2024 and 
+2025, surpassing OpenAI's o1-preview by 27.9 points on AIME 2024. The cold-start model alone 
+matches text-based RL performance (around 41\% on AIME 2024), indicating that tool-aware SFT 
+is a strong starting point and RL delivers the remaining gains.
+
+\subsection{ReTool Output Behavioral Analysis}
+ReTool exhibits emergent tool-use behaviors during RL. Response length drops by roughly 40\% 
+compared to pre-RL baselines, as code replaces verbose textual computation. The share of 
+responses containing code grows to nearly 98\%, while simultaneously code snippets become 
+longer and more complex. Most notably, interpreter feedback drives code self-correction. 
+The model can detect execution errors, revise functions, and re-run code until it succeeds, 
+reflecting a learned strategy for adaptive tool use rather than simple imitation.
+
+\bibliography{references}
+
+\end{document}

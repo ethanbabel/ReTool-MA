@@ -1,5 +1,13 @@
 # Ignore latex files (for now)
-latex_src/*
+latex_src/report.aux
+latex_src/report.log
+latex_src/report.out
+latex_src/report.bbl
+latex_src/report.blg
+latex_src/report.fdb_latexmk
+latex_src/report.fls
+latex_src/report.pdf
+latex_src/report.synctex.gz
 
 # Ignore project context files
 project_context/*
