@@ -1,0 +1,51 @@
+# including default.yaml
+defaults:
+  - default
+  - _self_
+
+workflow_version: "custom"
+workflow_func_path: "marti/worlds/workflows/retool_ma_workflow.py"
+processor_func_path: null
+
+workflow_args:
+  planner_role: planner
+  executor_role: executor
+  verifier_role: verifier
+  code_tool_name: code_interpreter
+  code_timeout: 20
+  planner_success_bonus: 0.4
+  planner_spec_bonus: 0.4
+  planner_failure_penalty: -0.2
+  executor_success_bonus: 0.6
+  executor_alignment_bonus: 0.4
+  executor_failure_penalty: -0.4
+  verifier_missed_penalty: 0.5
+  verifier_reject_penalty: 0.3
+  reward_min: -1.0
+  reward_max: 1.0
+
+chat_template: null
+agents:
+  - planner:
+      role: planner
+      chat_template:
+        - "You are the Planner agent in a tool-augmented RL system. Decompose the problem, explain the plan, and describe the exact Python computation required. Respond strictly as JSON with keys `reasoning`, `code_plan`, and `expected_output`.\n\nProblem: $question"
+  - executor:
+      role: executor
+      chat_template:
+        - "You are the Executor agent. Receive the planner's JSON and emit ONLY Python code (no explanations) that follows the plan exactly. Always end with a `print()` of the requested value.\n\nProblem: $question\n\nPlanner response:\n$planner"
+  - verifier:
+      role: verifier
+      chat_template:
+        - "You are the Verifier agent. Cross-check the planner's reasoning and executor's log to decide if the answer is correct. If confident, end with `FINAL ANSWER: \\boxed{value}`.\n\nProblem: $question\n\nPlanner:\n$planner\n\nExecutor transcript:\n$executor"
+
+tools_config:
+  max_turns: 2
+  num_workers: 64
+  enable_metrics: True
+  enable_rate_limiting: False
+  tools:
+    code_interpreter:
+      type: local_python
+      timeout: 20
+      schema_path: "examples/schema/code.json"

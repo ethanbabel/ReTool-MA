@@ -1,18 +1,18 @@
 fire
-torch==2.6.0
-transformers==4.52.1
+torch>=2.9.0
+transformers>=4.52.1
 datasets
 tokenizers
 tabulate
 tqdm
 # flash_attn==2.7.0.post2
-vllm==0.8.5.post1
+vllm>=0.9.0
 latex2sympy2
 numpy
 pandas
 peft
 pylatexenc
-ray==2.43.0
+ray>=2.43.0
 regex
 Requests
 ring_flash_attn
@@ -32,3 +32,6 @@ antlr4-python3-runtime==4.9.3
 shortuuid
 joblib
 ray[default]
+json5
+mcp>=0.0.9
+func_timeout

@@ -80,9 +80,11 @@ class PromptDatasetWithLabel(Dataset):
             self.prompts.append(sample)
             indice += 1
 
-        for sample in random.sample(self.prompts, 2):
-            print(sample)
-            print("="*20)
+        preview_count = min(2, len(self.prompts))
+        if preview_count > 0:
+            for sample in random.sample(self.prompts, preview_count):
+                print(sample)
+                print("=" * 20)
 
     def get_all_prompts(self):
         return self.prompts

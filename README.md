@@ -26,3 +26,51 @@ source .venv/bin/activate
 cd MARTI
 uv pip install -r requirements.txt
 ```
+
+4. Install huggingface_hub:
+```bash
+uv pip install huggingface_hub
+```
+
+5. Download desired model for local use:
+
+For example with Qwen2.5-3B-Instruct.
+```bash
+mkdir -p ReTool-MA/models/Qwen2.5-3B-Instruct
+hf download Qwen/Qwen2.5-3B-Instruct --local-dir ReTool-MA/models/Qwen2.5-3B-Instruct
+```
+
+## Running the ReTool-MA workflow
+
+Once dependencies are installed you can exercise a sample multi-agent Planner/Executor/Verifier workflow:
+
+```bash
+cd MARTI
+source ../.venv/bin/activate
+export MODEL_PATH=/workspace/ReTool-MA/models/Qwen2.5-3B-Instruct
+
+python -m marti.cli.commands.test_new \
+  --config-name ma_retool_ma \
+  default_agent.pretrain=$MODEL_PATH \
+  default_agent.vllm_num_engines=1 \
+  default_agent.vllm_tensor_parallel_size=1 \
+  default_agent.prompt_max_len=2048 \
+  default_agent.generate_max_len=1024 \
+  default_agent.rollout_batch_size=2 \
+  default_agent.micro_rollout_batch_size=1 \
+  default_agent.temperature=0.2 \
+  default_agent.max_samples=4 \
+  packing_samples=false \
+  prompt_data=data/AMC/test.jsonl \
+  prompt_split=train \
+  input_key=problem \
+  label_key=answer \
+  add_prompt_suffix=""
+```
+
+- `ma_retool_ma` loads the custom workflow (`marti/worlds/workflows/retool_ma_workflow.py`) plus a `tools_config` that uses the local Python executor, so no external Sandbox service is required.
+- Results for each problem land in `results/ma_retool_ma/<model>/AMC/results.json`. We also emit `summary.json`, which aggregates final accuracy, code execution pass rates, and the conditional pass rates for trajectories that ended correct vs. incorrect, matching the metrics in the project plan.
+
+## Model size guidance
+
+The RTX 5090 used in development exposes ~32 GB of VRAM. That budget easily fits three concurrent agents when each runs a `Qwen2.5-3B-Instruct` checkpoint under vLLM. Larger models (e.g., 7B) leave little headroom for executor buffers and RL rollout batches, so start with 3B for all roles. Once the pipeline is stable you can selectively scale the Planner to a larger checkpoint if desired.

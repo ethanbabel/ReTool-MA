@@ -14,6 +14,7 @@ from marti.worlds.tools.manager import ToolManager
 from marti.worlds.tools.mcp_manager import MCPManager
 from marti.worlds.tools.search import SearchToolExecutor
 from marti.worlds.tools.sandbox import SandboxFusionExecutor
+from marti.worlds.tools.local_python import LocalPythonToolExecutor
 from marti.verifiers.auto_verify import auto_verify
 
 import os
@@ -60,6 +61,19 @@ def register_openai_tools(tools_config, tool_manager):
 
             schema = srsly.read_json(tool_cfg["schema_path"])
             tools.append(schema)
+        elif tool_type == "local_python":
+            executor = LocalPythonToolExecutor(
+                timeout=tool_cfg.get("timeout", 20),
+                python_bin=tool_cfg.get("python_bin"),
+                max_output_chars=tool_cfg.get("max_output_chars", 4096),
+                work_dir=tool_cfg.get("work_dir"),
+            )
+            tool_manager.register_tool(tool_name, executor)
+
+            schema_path = tool_cfg.get("schema_path")
+            if schema_path:
+                schema = srsly.read_json(schema_path)
+                tools.append(schema)
         else:
             logger.warning(
                 f"Unknown tool type: {tool_type} for tool: {tool_name}")

@@ -1,3 +1,7 @@
+import asyncio
+import importlib.util
+from pathlib import Path
+from collections import defaultdict
 import ray
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -19,6 +23,9 @@ from marti.agents.multi_agent import MAGraph, get_kwargs
 from marti.verifiers.qwen.qwen_eval import qwen_reward_fn, majority_vote
 from marti.dataset.prompts_loader import PromptDatasetWithLabel
 from marti.helpers.distributed.distributed_sampler import DistributedSampler, ResumableRandomSampler
+from marti.worlds.tools.manager import ToolManager
+from marti.worlds.tools.mcp_manager import MCPManager
+from marti.worlds.tool_world import register_openai_tools, register_mcp_tools, print_tools
 
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -191,6 +198,159 @@ def generate_shared_samples(samples_maker, rand_prompts, world_size):
     return all_results
 
 
+def _load_workflow_function(path: str):
+    workflow_path = Path(path)
+    if not workflow_path.exists():
+        raise FileNotFoundError(f"Workflow file not found: {workflow_path}")
+    spec = importlib.util.spec_from_file_location("retool_workflow", str(workflow_path))
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    if not hasattr(module, "workflow"):
+        raise AttributeError(f"Workflow module {workflow_path} must define `workflow`.")
+    return module.workflow
+
+
+def _to_container(obj):
+    if isinstance(obj, DictConfig):
+        return OmegaConf.to_container(obj, resolve=True)
+    return obj
+
+
+def _build_tool_manager(cfg: DictConfig):
+    tools_cfg = getattr(cfg, "tools_config", None)
+    if not tools_cfg:
+        raise ValueError("tools_config must be specified when using a custom workflow.")
+    tools_cfg = _to_container(tools_cfg)
+    if tools_cfg.get("mcp_url"):
+        manager = MCPManager(tools_cfg)
+        tools = register_mcp_tools(manager)
+    else:
+        manager = ToolManager(tools_cfg)
+        tools = register_openai_tools(tools_cfg, manager)
+    manager.set_tools(tools)
+    print_tools(tools)
+    return manager
+
+
+def _run_custom_workflow(cfg, agent_list, prompts_dataset):
+    workflow_fn = _load_workflow_function(cfg.workflow_func_path)
+    workflow_args = _to_container(cfg.workflow_args) if getattr(cfg, "workflow_args", None) else {}
+    tool_manager = _build_tool_manager(cfg)
+
+    runtime_agents = []
+    for agent in agent_list:
+        runtime_agents.append({
+            "agent_id": agent["agent_id"],
+            "agent_role": agent["agent_role"],
+            "llm": agent["llms"][0],
+            "tokenizer": agent["tokenizer"],
+            "sampling_params": agent["sampling_params"],
+        })
+
+    samples = prompts_dataset.get_all_prompts()
+    prompts = [sample["prompt"] for sample in samples]
+    labels = [sample["label"] for sample in samples]
+
+    metadata = []
+    for sample in samples:
+        sample_meta = sample.get("metadata")
+        if isinstance(sample_meta, str):
+            try:
+                metadata.append(json.loads(sample_meta))
+            except json.JSONDecodeError:
+                metadata.append({})
+        elif isinstance(sample_meta, dict):
+            metadata.append(sample_meta)
+        else:
+            metadata.append({})
+
+    async def _run_all():
+        results = []
+        for idx, (prompt, label, meta) in enumerate(zip(prompts, labels, metadata)):
+            res = await workflow_fn(
+                prompt=prompt,
+                label=label,
+                agents=runtime_agents,
+                tool_manager=tool_manager,
+                task=getattr(cfg, "verify_task", "math"),
+                metadata=meta,
+                workflow_args=workflow_args,
+                prompt_id=idx,
+                is_eval=True,
+            )
+            results.append(res)
+        return results
+
+    return asyncio.run(_run_all())
+
+
+def _aggregate_retool_metrics(histories):
+    if not histories:
+        return None
+    entries = [h for h in histories if isinstance(h, dict) and "metrics" in h]
+    if not entries:
+        return None
+
+    total = len(entries)
+    accuracy = 0
+    total_attempts = total_passes = total_failures = 0
+    correct_attempts = correct_passes = 0
+    incorrect_attempts = incorrect_passes = 0
+    total_steps = 0
+
+    role_totals = defaultdict(float)
+    role_counts = defaultdict(int)
+
+    for entry in entries:
+        metrics = entry.get("metrics", {})
+        is_correct = bool(metrics.get("is_correct"))
+        code_stats = metrics.get("code_execution", {})
+        attempts = code_stats.get("attempts", 0)
+        passes = code_stats.get("passes", 0)
+        failures = code_stats.get("failures", attempts - passes)
+
+        accuracy += 1 if is_correct else 0
+        total_attempts += attempts
+        total_passes += passes
+        total_failures += failures
+        total_steps += metrics.get("trajectory_length", 0)
+
+        if is_correct:
+            correct_attempts += attempts
+            correct_passes += passes
+        else:
+            incorrect_attempts += attempts
+            incorrect_passes += passes
+
+        for turn in entry.get("trajectory", []):
+            role = turn.get("agent_role")
+            reward_val = turn.get("agent_reward")
+            if role and reward_val is not None:
+                role_totals[role] += reward_val
+                role_counts[role] += 1
+
+    summary = {
+        "num_samples": total,
+        "final_accuracy": accuracy / total if total else 0.0,
+        "avg_trajectory_length": total_steps / total if total else 0.0,
+        "code_metrics": {
+            "total_attempts": total_attempts,
+            "total_passes": total_passes,
+            "total_failures": total_failures,
+            "overall_pass_rate": (total_passes / total_attempts) if total_attempts else 0.0,
+            "pass_rate_when_correct": (correct_passes / correct_attempts) if correct_attempts else 0.0,
+            "pass_rate_when_incorrect": (incorrect_passes / incorrect_attempts) if incorrect_attempts else 0.0,
+            "avg_calls_per_problem": (total_attempts / total) if total else 0.0,
+        },
+    }
+    if role_totals:
+        summary["reward_stats"] = {
+            role: role_totals[role] / role_counts[role] for role in role_totals
+        }
+    return summary
+
+
 @hydra.main(config_path="../configs", config_name="default.yaml", version_base=None)
 def train(cfg: DictConfig):
     OmegaConf.set_struct(cfg, False)
@@ -273,6 +433,8 @@ def train(cfg: DictConfig):
 
         agent = {
             "agent_name": agent_name,
+            "agent_id": agent_name,
+            "agent_role": agent_config.role,
             "pretrain": agent_config.pretrain,
             "llms": agent_llms,
             "tokenizer": tokenizer,
@@ -302,63 +464,70 @@ def train(cfg: DictConfig):
         prompts_data, None, strategy, input_template=args.input_template, add_prompt_suffix=args.add_prompt_suffix
     )
 
-    sampler = ResumableRandomSampler(
-        data_source=prompts_dataset,
-        batch_size=args.rollout_batch_size,
-        drop_last=False,
-        shuffle=False,
-        seed=args.seed
-    )
+    workflow_path = getattr(cfg, "workflow_func_path", None)
+    use_custom_workflow = bool(workflow_path)
 
-    prompts_dataloader = strategy.setup_dataloader(
-        prompts_dataset, args.rollout_batch_size, True, shuffle=False,
-        sampler=sampler, drop_last=False
-    )
-
-    # create samples maker
-    sample_maker_class = MultiAgentWorld
-    samples_maker = sample_maker_class(
-        strategy=strategy, agents=agent_list)
-
-    # Restore step and start_epoch
-    steps = 1
-    start_episode = 0
-    consumed_samples = 0
-    all_histories = {}
-    final_histories = []
-    question2idx = {}
-    idx2question = []
-    for episode in range(start_episode, args.num_episodes):
-        if isinstance(prompts_dataloader.sampler, ResumableRandomSampler):
-            prompts_dataloader.sampler.set_epoch(
-                episode, consumed_samples=0
-            )
-        pbar = tqdm(
-            range(prompts_dataloader.__len__()),
-            desc=f"Episode [{episode + 1}/{args.num_episodes}]"
+    if use_custom_workflow:
+        final_histories = _run_custom_workflow(cfg, agent_list, prompts_dataset)
+    else:
+        sampler = ResumableRandomSampler(
+            data_source=prompts_dataset,
+            batch_size=args.rollout_batch_size,
+            drop_last=False,
+            shuffle=False,
+            seed=args.seed
         )
 
-        # pass generated samples to each actor worker
-        for rand_prompts in prompts_dataloader:
-            # make shared samples refs
-            history = generate_shared_samples(samples_maker, rand_prompts=rand_prompts, world_size=args.vllm_num_engines)
-            for idx, question in enumerate(rand_prompts["prompt"]):
-                if question not in idx2question:
-                    idx2question.append(question)
-                    question2idx[question] = len(question2idx)
-                    all_histories[question] = []
-                all_histories[question].append(history[question])
+        prompts_dataloader = strategy.setup_dataloader(
+            prompts_dataset, args.rollout_batch_size, True, shuffle=False,
+            sampler=sampler, drop_last=False
+        )
 
-            pbar.update()
-            steps = steps + 1
+        sample_maker_class = MultiAgentWorld
+        samples_maker = sample_maker_class(
+            strategy=strategy, agents=agent_list)
 
-    for idx, question in enumerate(idx2question):
-        final_histories.append(all_histories[question][0])
+        steps = 1
+        start_episode = 0
+        consumed_samples = 0
+        all_histories = {}
+        final_histories = []
+        question2idx = {}
+        idx2question = []
+        for episode in range(start_episode, args.num_episodes):
+            if isinstance(prompts_dataloader.sampler, ResumableRandomSampler):
+                prompts_dataloader.sampler.set_epoch(
+                    episode, consumed_samples=0
+                )
+            pbar = tqdm(
+                range(prompts_dataloader.__len__()),
+                desc=f"Episode [{episode + 1}/{args.num_episodes}]"
+            )
+
+            for rand_prompts in prompts_dataloader:
+                history = generate_shared_samples(samples_maker, rand_prompts=rand_prompts, world_size=args.vllm_num_engines)
+                for idx, question in enumerate(rand_prompts["prompt"]):
+                    if question not in idx2question:
+                        idx2question.append(question)
+                        question2idx[question] = len(question2idx)
+                        all_histories[question] = []
+                    all_histories[question].append(history[question])
+
+                pbar.update()
+                steps = steps + 1
+
+        for idx, question in enumerate(idx2question):
+            final_histories.append(all_histories[question][0])
 
     output_path = os.path.join(args.save_path)
     if not os.path.exists(output_path):
         os.makedirs(output_path)
     srsly.write_json(os.path.join(output_path, f"results.json"), final_histories)
+
+    summary = _aggregate_retool_metrics(final_histories)
+    if summary:
+        srsly.write_json(os.path.join(output_path, "summary.json"), summary)
+        print(f"[ReTool-MA] Aggregated metrics: {json.dumps(summary, indent=2)}")
 
 
 if __name__ == "__main__":
