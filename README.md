@@ -91,7 +91,3 @@ bash scripts/run_train_retool_ma.sh $MODEL_PATH $WANDB_API_KEY
 ```
 
 The script wraps `python -m marti.cli.commands.train --config-name ma_retool_ma` with resource settings that fit a single RTX 5090 (one vLLM engine, small rollout batches) and streams logs/checkpoints to `MARTI/outputs` plus W&B/TensorBoard.
-
-## Model size guidance
-
-The RTX 5090 used in development exposes ~32 GB of VRAM. That budget easily fits three concurrent agents when each runs a `Qwen2.5-3B-Instruct` checkpoint under vLLM. Larger models (e.g., 7B) leave little headroom for executor buffers and RL rollout batches, so start with 3B for all roles. Once the pipeline is stable you can selectively scale the Planner to a larger checkpoint if desired.
