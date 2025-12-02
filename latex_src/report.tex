@@ -72,6 +72,70 @@ longer and more complex. Most notably, interpreter feedback drives code self-cor
 The model can detect execution errors, revise functions, and re-run code until it succeeds, 
 reflecting a learned strategy for adaptive tool use rather than simple imitation.
 
+\section{ReTool-MA Methodology}
+Building on the ReTool observations, our system explicitly decomposes the policy into 
+dedicated Planner, Executor, and Verifier roles implemented with MARTI's 
+multi-agent workflow engine. Each agent is backed by a Qwen2.5 reasoning model, but the 
+workflow orchestrates their interaction through a directed graph, tool calls, and 
+role-specific rewards.
+
+\subsection{Role Decomposition and MARTI Integration}
+We instantiate a custom workflow 
+\texttt{planner} $\rightarrow$ \texttt{executor} $\rightarrow$ \texttt{verifier}
+inside MARTI's asynchronous DAG runtime. The Planner receives the raw math problem and 
+must emit a structured JSON plan containing free-form reasoning, a high-level code sketch, 
+and the anticipated numerical quantity. The Executor is prompted with the Planner JSON and 
+is only allowed to emit executable Python. Finally, the Verifier consumes the original problem, 
+Planner justification, and the Executor's code transcript to decide whether the trajectory should 
+terminate or request revisions.
+
+The workflow returns a full trajectory trace, including intermediate prompts, code snippets, 
+tool metadata, and a compact metrics object. During offline evaluation (and later RL training) we 
+log aggregate summaries such as accuracy, average number of tool calls, and code pass rates split 
+by correct vs.\ incorrect final answers. These summaries are written to \texttt{results.json} and 
+\texttt{summary.json}, mirroring the statistical diagnostics that motivated ReTool.
+
+\subsection{Local Code Execution and Instrumentation}
+To avoid dependence on remote execution services, we implemented a lightweight 
+\texttt{local\_python} tool that drops code into a temporary directory, runs the repository 
+Python interpreter with strict timeouts, captures stdout/stderr, and cleans up artifacts. The tool 
+is registered via MARTI's \texttt{ToolManager}, so both inference and RL use the exact same sandbox. 
+Each tool call contributes to a global metrics collector (success/failure counts and latency) and the 
+workflow emits a per-problem diagnostic bundle:
+\[
+\text{code\_metrics} = 
+\left\{\text{attempts}, \text{passes}, \text{failures}, \text{pass rate conditioned on correctness}\right\},
+\]
+which is later consumed by our evaluator and report.
+
+\subsection{Reward Shaping for Role-Specific Behaviors}
+The base ReTool reward is a sparse correctness indicator provided by the math grader. To inject 
+information earlier in the trajectory we added small shaping terms for each role:
+\begin{align}
+r_{\text{plan}} &= \alpha_{\text{succ}}\,\mathbb{1}\{\text{tool success}\}
+                  + \alpha_{\text{spec}}\,\mathbb{1}\{\text{tool output matches expected spec}\}
+                  - \alpha_{\text{fail}}\,\mathbb{1}\{\text{tool failure}\}, \\
+r_{\text{exec}} &= \beta_{\text{succ}}\,\mathbb{1}\{\text{tool success}\}
+                  + \beta_{\text{align}}\,\mathcal{O}(\text{plan},\text{code})
+                  - \beta_{\text{fail}}\,\mathbb{1}\{\text{tool failure}\}, \\
+r_{\text{ver}}  &= r_{\text{final}}
+                  - \gamma_{\text{miss}}\,\mathbb{1}\{\text{accepted wrong tool output}\}
+                  - \gamma_{\text{reject}}\,\mathbb{1}\{\text{rejected correct tool output}\}.
+\end{align}
+The overlap term $\mathcal{O}(\text{plan},\text{code}) \in [0,1]$ measures lexical agreement 
+between the Planner's \texttt{code\_plan} and the Executor's snippet, so the Executor is 
+rewarded for adhering to specifications rather than blindly solving the problem. Reward values are 
+clamped to $[-1,1]$ so that shaping remains a gentle nudge around the sparse terminal signal. The 
+intuitive effect is that the Planner is nudged to produce executable specifications, the Executor 
+to write code that mirrors those specifications, and the Verifier to double-check whether the 
+tool trace actually solves the problem before committing to a final answer.
+
+In preliminary AMC trials the shaped rewards immediately highlight the failure mode we observed in 
+ReTool: the Executor achieves a perfect tool pass rate even on incorrect trajectories, but the 
+Verifier receives explicit penalties when it accepts those incorrect tool outputs. This should 
+encourage the Verifier to demand revisions in future RL training rather than rubber-stamping every 
+tool call, aligning with the cognitive separation goals of ReTool-MA.
+
 \bibliography{references}
 
 \end{document}

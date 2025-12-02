@@ -42,7 +42,8 @@ hf download Qwen/Qwen2.5-3B-Instruct --local-dir ReTool-MA/models/Qwen2.5-3B-Ins
 
 ## Running the ReTool-MA workflow
 
-Once dependencies are installed you can exercise a sample multi-agent Planner/Executor/Verifier workflow:
+### Quick sample run
+Once dependencies are installed you can exercise a small multi-agent Planner/Executor/Verifier workflow:
 
 ```bash
 cd MARTI
@@ -68,8 +69,26 @@ python -m marti.cli.commands.test_new \
   add_prompt_suffix=""
 ```
 
-- `ma_retool_ma` loads the custom workflow (`marti/worlds/workflows/retool_ma_workflow.py`) plus a `tools_config` that uses the local Python executor, so no external Sandbox service is required.
-- Results for each problem land in `results/ma_retool_ma/<model>/AMC/results.json`. We also emit `summary.json`, which aggregates final accuracy, code execution pass rates, and the conditional pass rates for trajectories that ended correct vs. incorrect, matching the metrics in the project plan.
+- `ma_retool_ma` loads the custom workflow (`marti/worlds/workflows/retool_ma_workflow.py`) plus a `tools_config` that uses the local Python executor, so no external sandbox service is required.
+- Results for each problem land in `MARTI/ckpt/results.json` and `MARTI/ckpt/summary.json`. The summary aggregates final accuracy, code execution pass rates, the conditional pass rates for correct vs. incorrect trajectories, and the per-role shaping rewards.
+
+### Full training run
+For a longer RL run on the same workflow, first install flash-attn (ensure torch is installed first):
+```bash
+uv pip install --no-build-isolation flash_attn==2.7.0.post2
+```
+
+Then to start training:
+```bash
+cd MARTI
+source ../.venv/bin/activate
+export MODEL_PATH=/workspace/ReTool-MA/models/Qwen2.5-3B-Instruct
+export WANDB_API_KEY=<YOUR_WANDB_KEY>
+
+bash scripts/run_train_retool_ma.sh $MODEL_PATH $WANDB_API_KEY
+```
+
+The script wraps `python -m marti.cli.commands.train --config-name ma_retool_ma` with resource settings that fit a single RTX 5090 (one vLLM engine, small rollout batches) and streams logs/checkpoints to `MARTI/outputs` plus W&B/TensorBoard.
 
 ## Model size guidance
 
