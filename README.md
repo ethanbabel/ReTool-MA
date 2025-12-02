@@ -85,6 +85,8 @@ source ../.venv/bin/activate
 export MODEL_PATH=/workspace/ReTool-MA/models/Qwen2.5-3B-Instruct
 export WANDB_API_KEY=<YOUR_WANDB_KEY>
 
+ray start --head
+
 bash scripts/run_train_retool_ma.sh $MODEL_PATH $WANDB_API_KEY
 ```
 
