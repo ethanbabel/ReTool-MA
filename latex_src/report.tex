@@ -1,83 +1,384 @@
 \documentclass{article}
-
-\usepackage{amsmath}
-\usepackage{amssymb}
+\usepackage[final, nonatbib]{neurips_2024}
+\usepackage{amsmath, amssymb, bbm}
 \usepackage{graphicx}
-\usepackage{hyperref}
-\usepackage{microtype}
+\usepackage{booktabs}
 \usepackage{natbib}
-\bibliographystyle{plainnat}
+\usepackage{hyperref}
+\usepackage{url}
+\bibliographystyle{unsrtnat}
 
-\title{Machine Learning: Reinforcement Learning Final Project Report}
-
-\author{Ethan Babel}
+\title{
+  ReTool-MA: Multi-Agent Extension to the ReTool Reinforcement Learning Framework 
+  for Strategic Tool Use in LLMs
+}
+\author{
+  \textbf{Ethan Babel} \\
+  Johns Hopkins University \\
+  \texttt{ebabel1@jh.edu}
+  \and
+  \textbf{Simon Rupp} \\
+  Johns Hopkins University \\
+  \texttt{srupp4@jh.edu}
+}
 
 \begin{document}
+\makeatletter
+\renewcommand{\@noticestring}{}
+\makeatother
+
 
 \maketitle
 
 \begin{abstract}
-  Placeholder for the project abstract. Summarize the research motivation, the ReTool-MA contribution, and key findings once the work is complete.
+  Large language models (LLMs) increasingly rely on external computation tools,
+  such as code interpreters, to solve mathematically intensive reasoning tasks.
+  Recent research,has demonstrated that reinforcement learning (RL) can be used to 
+  encourage strategic tool use, vastly improving performance on complex reasoning problems. 
+  However, ReTool employs a monolithic single-agent policy, forcing one model to simultaneously 
+  perform planning, code generation,and verification. Behavioral analysis of ReTool 
+  reveals that code execution failures correlate strongly with incorrect final answers, 
+  suggesting that reasoning and tool-use competence may be entangled in ways that hinder
+  credit assignment and robustness. In this work, we introduce ReTool-MA, a 
+  multi-agent extension of the ReTool framework designed to decouple planning, execution, 
+  and verification into dedicated roles.
 \end{abstract}
 
 \section{Introduction}
-Placeholder for the introduction. Outline the motivation, problem setting, and the roadmap for the rest of the report.
-\citep{marti2025}
+
+Recent work has shown that LLMs can substantially
+improve their mathematical reasoning capabilities by leveraging external
+computation tools such as Python interpreters. Instead of performing all
+symbolic manipulation and arithmetic via textual reasoning, a model may write code,
+execute it, inspect the output, and integrate the result into its reasoning
+process. ReTool \citep{feng2025retoolreinforcementlearningstrategic} formalizes
+this behavior as a RL problem, training an LLM to
+interleave natural language reasoning with strategic code interpreter (CI) tool
+use. Through a combination of supervised cold-start training and PPO-based RL,
+ReTool achieves groundbreaking performance on AIME 2024 and 2025.
+
+However, the original ReTool system employs a single monolithic policy
+$\pi_\theta$, which must simultaneously handle high-level reasoning, code
+synthesis, and verification of tool outputs. Behavioral analysis reveals a key
+limitation of this design, namely that code execution failures correlate strongly with
+incorrect final answers, and this divergence grows over the course of training.
+
+In this work, we explore whether architectural decomposition can mitigate
+this issue. We introduce ReTool-MA, a multi-agent extension of the
+ReTool framework that separates the original policy into three distinct roles:
+a Planner responsible for reasoning and specifying tool calls, an
+Executor responsible solely for generating and running Python code, and a
+Verifier responsible for adjudicating correctness and deciding whether
+revisions are needed. We implement ReTool-MA using MARTI \citep{marti2025},
+a flexible multi-agent workflow engine, and train the system using PPO with 
+lightweight, role-specific reward shaping.
 
 \section{ReTool: Paper Summary}
-This section summarizes the ReTool: Reinforcement Learning for Strategic Tool Use in LLMs paper 
-\citep{feng2025retoolreinforcementlearningstrategic}, which introduces a reinforcement learning (RL) 
-framework that tightly integrates code interpreter (CI) tool use into the reasoning process of large 
-language models (LLMs).
+This section provides a detailed overview of the ReTool framework introduced in 
+\citep{feng2025retoolreinforcementlearningstrategic}, which studies how to train 
+LLMs with RL to strategically interleave natural language reasoning and CI tool use.
+We focus on the problem formulation, the two-stage training pipeline, and the 
+empirical and behavioral findings that motivate our ReTool-MA extension.
 
 \subsection{ReTool Motivation}
-Reasoning-focused LLMs trained with RL perform well on text-only
-tasks but struggle on problems that demand precise computation, symbolic manipulation, 
-or geometric reasoning. Purely textual reasoning often accumulates errors over long horizons, 
-whereas code interpreters can provide exact numeric validation and programmatic exploration. 
-Recent research has explored both prompting and supervised fine-tuning (SFT) based approaches to 
-encourage tool use in LLMs, however these efforts have shown to generalize quite poorly. 
-ReTool targets this gap by training an LLM to decide when and how to call tools, utilize code 
-execution with natural language reasoning, and refine its strategy through outcome-driven RL.
+ReTool addresses the fundamental gap between purely text-based RL for reasoning 
+and the demands of tasks that require exact computation, symbolic manipulation, 
+and programmatic execution, such as AIME-style math problems. Let 
+$\pi_\theta(y_{1:T} \mid x)$ denote a text-only policy over output token sequences 
+$y_{1:T}$ conditioned on an input problem $x$. In conventional RL reasoning setups, 
+the environment is purely textual, and the reward depends only on the final 
+string, e.g.,
+\begin{equation}
+  r(x, y_{1:T}) = 
+  \begin{cases}
+    +1, & \text{if the final answer token sequence matches the ground truth,} \\
+    -1, & \text{otherwise.}
+  \end{cases}
+\end{equation}
+Such policies must implement all intermediate computation "in the head", which 
+leads to error accumulation and poor sample efficiency, particularly on long-horizon problems.
+Empirically, text-only RL agents often arbitrarily overfit to spurious textual heuristics and 
+fail to generalize to harder math benchmarks, even when trained with strong 
+advantages or curated reward models.
+
+In contrast, a code interpreter can be viewed as an external tool 
+$T: \mathcal{C} \rightarrow \mathcal{O}$ mapping code snippets $c \in \mathcal{C}$ 
+(e.g., Python programs) to structured outputs $o \in \mathcal{O}$ 
+(e.g., printed values, exception traces). ReTool treats access to $T$ as an 
+additional action modality. Rather than forcing the policy to approximate 
+computation in text space, the agent can:
+\begin{enumerate}
+  \item decide when to call $T$,
+  \item decide what code to write,
+  \item decide how to incorporate the resulting observation $o$ back into its reasoning.
+\end{enumerate}
+Previous work on tool use has relied primarily on prompting strategies or 
+supervised fine-tuning (SFT) over static traces, which do not provide explicit 
+credit assignment for tool-calling decisions and tend to generalize poorly out of
+sample. ReTool explicitly frames this as an RL problem in which the 
+policy optimizes end-to-end task reward while learning a tool-use strategy.
 
 \subsection{ReTool Methodology}
-ReTool follows a two-stage pipeline. First, a cold-start SFT stage uses 
-a curated synthetic dataset of code-augmented reasoning traces to bootstrap 
-tool-calling competence. Second, an PPO-based RL stage rolls out trajectories 
-that interleave natural language reasoning with code execution inside a sandboxed CI. 
-The policy receives interpreter outputs (including errors) and continues generation, 
-enabling iterative refinement and code self-correction.
+Formally, ReTool defines an episodic Markov decision process (MDP) over 
+trajectories that mix natural language tokens and tool calls. Let:
+\begin{itemize}
+  \item $x$ be the input problem (e.g., an AIME question),
+  \item $s_t$ denote the text state at step $t$, consisting of the conversation history,
+  \item $a_t$ denote the next token (or tool delimiter) sampled from the policy,
+  \item $\tau = (s_0, a_0, s_1, a_1, \dots, s_T)$ be the full trajectory.
+\end{itemize}
+The policy $\pi_\theta(a_t \mid s_t)$ is a decoder-style LLM that outputs either 
+ordinary text tokens or special \texttt{<code>} / \texttt{</code>} tags. When a 
+closing \texttt{</code>} tag is emitted, the substring between the most recent 
+\texttt{<code>} and \texttt{</code>} tags is extracted as a code snippet $c$, 
+executed in a sandboxed Python environment, and the resulting output $o$ (stdout, 
+stderr, error messages) is injected into the state as
+\begin{equation}
+  s_{t+1} = \mathrm{append}(s_t, \texttt{<interpreter>} \; o \; \texttt{</interpreter>}).
+\end{equation}
+From the policy’s perspective, tool use is thus a stochastic sequence of discrete 
+decisions that change the observation $s_t$ via code execution side effects.
 
-During rollouts, code snippets are delimited with \texttt{<code>} tags. When a closing 
-tag appears, the snippet is executed and feedback is inserted in \texttt{<interpreter>} 
-tags before generation resumes. The reward is a simple rule-based accuracy signal 
-(+1 for correct answers in a required format such as \verb|\\boxed{}|, -1 otherwise), 
-avoiding reward hacking while encouraging diverse strategies. 
+The training pipeline consists of two stages:
+\begin{enumerate}
+  \item \textbf{Cold-start SFT.} ReTool constructs a synthetic dataset 
+    $\mathcal{D}_\text{SFT} = \{ (x^{(i)}, y^{(i)}_{1:T_i}) \}$ of code-augmented 
+    reasoning traces, where the targets include interleaved natural language 
+    reasoning, \texttt{<code>} blocks, and \texttt{<interpreter>} outputs. The 
+    model is trained to maximize the conditional log-likelihood
+    \begin{equation}
+      \mathcal{L}_\text{SFT}(\theta) 
+      = \mathbb{E}_{(x, y) \sim \mathcal{D}_\text{SFT}}
+        \left[ \sum_{t=1}^{T} \log \pi_\theta(y_t \mid x, y_{1:t-1}) \right],
+    \end{equation}
+    thus bootstrapping basic competence in producing tool-augmented traces.
+  \item \textbf{PPO-based RL finetuning.} Starting from the SFT checkpoint, ReTool 
+    performs on-policy rollouts on math benchmarks. For each problem $x$, the 
+    model samples a trajectory $\tau$ until it emits a final answer in a 
+    prescribed format (e.g., \verb|\boxed{}|). A terminal reward is assigned as
+    \begin{equation}
+      R(\tau) = 
+      \begin{cases}
+        +1, & \text{if the final answer is exactly correct}, \\
+        -1, & \text{otherwise}.
+      \end{cases}
+    \end{equation}
+    There is no intermediate shaping, so tool use only influences return 
+    through its effect on answer correctness.
+\end{enumerate}
+The RL stage aims to maximize the traditional expected return objective
+\begin{equation}
+  J(\theta) = \mathbb{E}_{\tau \sim \pi_\theta} \left[ R(\tau) \right].
+\end{equation}
+Let $\theta_\text{old}$ denote the parameters used to 
+generate the batch of trajectories, and define the importance sampling ratio
+\begin{equation}
+  r_t(\theta) 
+  = \frac{\pi_\theta(a_t \mid s_t)}{\pi_{\theta_\text{old}}(a_t \mid s_t)}.
+\end{equation}
+With advantage estimates $\hat{A}_t$ computed via a value baseline or a 
+generalized advantage estimator, the PPO objective is
+\begin{equation}
+  \mathcal{L}_\text{PPO}(\theta) 
+  = \mathbb{E}_t \left[
+      \min\big(
+        r_t(\theta)\,\hat{A}_t,\;
+        \mathrm{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon)\,\hat{A}_t
+      \big)
+    \right],
+\end{equation}
+where $\epsilon$ is a clipping hyperparameter. Gradients are taken with respect to the 
+LLM parameters, so the model is directly optimized to favor token sequences (and 
+hence tool-use strategies) that lead to higher final reward. 
+While effective credit assignment for tool calls is non-trivial because rewards are
+binary and delayed, ReTool observes strong gains over pure SFT baselines nonetheless.
 
 \subsection{ReTool Results}
-On the AIME 2024 and 2025 math benchmarks, ReTool substantially outperforms text-only RL 
-baselines and other public tool-use systems. With Qwen2.5--32B-Instruct, ReTool achieves 
-67.0\% (AIME 2024) and 49.3\% (AIME 2025) after only 400 training steps, compared to 40.0\% 
-and 36.7\% for a text-based RL baseline that needs over 1{,}000 steps. Using a stronger 
-backbone (DeepSeek-R1-Distill-Qwen-32B), ReTool reaches 72.5\% and 54.3\% on AIME 2024 and 
-2025, surpassing OpenAI's o1-preview by 27.9 points on AIME 2024. The cold-start model alone 
-matches text-based RL performance (around 41\% on AIME 2024), indicating that tool-aware SFT 
-is a strong starting point and RL delivers the remaining gains.
+ReTool evaluates its approach on the AIME 2024 and 2025 benchmarks using several 
+backbone models. After only $400$ RL steps, ReTool achieves $67.0\%$ on AIME 2024 
+and $49.3\%$ on AIME 2025 with the Qwen2.5--32B-Instruct backbone.
+The full results are summarized below in Table~\ref{tab:retool_full_pass1}.
+
+
+\begin{table}[h]
+\centering
+\caption{ReTool pass@1 accuracy on AIME 2024 and AIME 2025 benchmarks. 
+Results reproduced from \citet{feng2025retoolreinforcementlearningstrategic}.}
+\label{tab:retool_full_pass1}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Model} & \textbf{AIME 2024 (pass@1)} & \textbf{AIME 2025 (pass@1)} \\
+\midrule
+\multicolumn{3}{c}{\textit{Existing Baselines}} \\
+\midrule
+Qwen2.5-Math-72B-Instruct       & 30.0 & --   \\
+Qwen2.5-Math-72B-Instruct-TIR   & 40.0 & --   \\
+Sky-T1                          & 43.3 & --   \\
+OpenAI o1-preview               & 44.6 & 37.9 \\
+DeepSeek-R1-Zero-Qwen-32B       & 47.0 & --   \\
+QWQ-32B-Preview                 & 50.0 & 33.5 \\
+s1-32B                          & 56.7 & --   \\
+\midrule
+\multicolumn{3}{c}{\textit{CI-powered RL}} \\
+\midrule
+\textbf{ReTool (Qwen2.5--32B-Instruct)}                & \textbf{67.0} & \textbf{49.3} \\
+\textbf{ReTool (DeepSeek-R1-Distill-Qwen-32B)}        & \textbf{72.5} & \textbf{54.3} \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{ReTool Output Behavioral Analysis}
-ReTool exhibits emergent tool-use behaviors during RL. Response length drops by roughly 40\% 
-compared to pre-RL baselines, as code replaces verbose textual computation. The share of 
-responses containing code grows to nearly 98\%, while simultaneously code snippets become 
-longer and more complex. Most notably, interpreter feedback drives code self-correction. 
-The model can detect execution errors, revise functions, and re-run code until it succeeds, 
-reflecting a learned strategy for adaptive tool use rather than simple imitation.
+Beyond aggregate accuracy, ReTool conducts a detailed behavioral analysis of the 
+learned policy. Let $\rho_\text{code}$ denote the fraction of responses that 
+contain at least one \texttt{<code>} block, and let $\ell_\text{resp}$ denote 
+the average response length. After RL, ReTool observes:
+\begin{itemize}
+  \item $\rho_\text{code}$ increases to nearly $98\%$ on evaluation sets, indicating that 
+    the policy has learned to rely on the code interpreter for most problems.
+  \item $\ell_\text{resp}$ decreases by roughly $40\%$ relative to the pre-RL model, 
+    reflecting a shift from verbose textual derivations to more concise explanations 
+    augmented with code.
+\end{itemize}
+Code snippets themselves become longer and more structured, often defining helper 
+functions and loops to search over combinatorial possibilities or verify constraints. 
+This suggests that the policy is not simply learning to sprinkle in trivial calls to 
+the interpreter but is instead planning how to offload computationally 
+demanding subproblems into code.
+
+A key qualitative behavior is self-correction driven by interpreter feedback. 
+When executing a snippet $c$ yields an exception or unintended output $o$, the 
+policy frequently engages in a repair loop:
+\begin{enumerate}
+  \item Inspect the error message in the \texttt{<interpreter>} block.
+  \item Update the internal reasoning to hypothesize a fix.
+  \item Emit a revised code snippet $c'$ that addresses the issue.
+\end{enumerate}
+Empirically, many trajectories contain multiple code iterations before convergence 
+to a successful run, which indicates that RL has taught the model to treat tool 
+feedback as a learning signal within the episode. 
+
+However, ReTool also reveals a failure mode that is central to the motivation for
+our proposed multi-agent extension to this framework. When conditioning on 
+incorrect final answers, the probability that a code snippet passes
+(i.e., executes without error and returns a value consistent with the 
+model's stated intent) diverges downward over training compared to trajectories 
+with correct answers.
+
+\section{ReTool-MA Motivation}
+While ReTool demonstrates that CI-powered RL can substantially improve pass@1 
+accuracy on AIME-style benchmarks, its behavioral analysis reveals a key 
+limitation, namely that code execution failures are strongly coupled with incorrect 
+final answers. Empirically as shown in Figure~\ref{fig:retool-codepassrate},
+the conditional probability that a code snippet passes 
+(i.e., executes without error and produces a semantically plausible output) 
+given an incorrect final answer, 
+$\mathbb{P}(\text{code pass} \mid \text{answer incorrect})$, 
+diverges downward over training relative to 
+$\mathbb{P}(\text{code pass} \mid \text{answer correct})$. This suggests a 
+tight feedback loop between the model's high-level reasoning and its tool-use 
+behavior.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics{figures/ReTool_CodePassRate.png}
+    \caption{ReTool code pass rates conditioned on final answer correctness over RL training. 
+    Reproduced from \citet{feng2025retoolreinforcementlearningstrategic}.}
+    \label{fig:retool-codepassrate}
+\end{figure}
+
+One interpretation is that code failures are a downstream effect of 
+degraded reasoning. As problems become more complex, the single ReTool policy 
+$\pi_\theta$ must simultaneously perform several cognitively demanding tasks:
+\begin{enumerate}
+  \item maintain long-horizon mathematical reasoning,
+  \item decide when and how to call the code interpreter,
+  \item synthesize syntactically valid and semantically aligned Python code,
+  \item verify whether tool outputs are consistent with the overall plan.
+\end{enumerate}
+When the model's latent reasoning state drifts away from a correct solution, the 
+same underlying representation is used to generate code. In RL terms, the 
+policy state $s_t$ is overloaded by its responsibilities to encode both the problem-solving 
+context and the code synthesis context. Errors in the reasoning component 
+of $s_t$ might therefore induce errors in code-generation actions $a_t$, causing 
+execution to fail and compounding the trajectory's deviation from high reward. 
+In this view, degraded reasoning is the root cause of both incorrect answers and
+code execution failures.
+
+A more concerning and perhaps more plausible interpretation is that causality runs in the opposite direction, 
+and incorrect code is itself a primary cause of incorrect answers. In the ReTool MDP, 
+tool calls are high-leverage actions. A single incorrect code snippet can drastically 
+alter trajectory $\tau$, particularly a snippet which executes without error but 
+produces an incorrect or unintended numeric result that the policy then incorporates 
+into subsequent reasoning. Because rewards are sparse and only provided at the end of 
+the episode, the RL update does not explicitly disentangle whether a low return $R(\tau)$
+arose from flawed symbolic reasoning, incorrect code, a verification failure, or 
+some combination of all three. The monolithic policy must implicitly solve this 
+credit assignment problem across heterogeneous sub-tasks, which is notoriously 
+difficult in long-horizon RL.
+
+Formally, we can view the ReTool policy as implementing three latent sub-policies
+\begin{equation}
+  \pi_\theta(a_t \mid s_t) 
+  \approx 
+  \pi_\theta^{\text{plan}}(a_t^{\text{plan}} \mid s_t)
+  \;\pi_\theta^{\text{code}}(a_t^{\text{code}} \mid s_t)
+  \;\pi_\theta^{\text{ver}}(a_t^{\text{ver}} \mid s_t),
+\end{equation}
+corresponding respectively to planning, code synthesis, and verification actions. 
+In the original ReTool setup, these components are implicitly entangled within a 
+single parameter vector $\theta$ and share a common hidden state. As a result, 
+gradient updates driven by terminal rewards $R(\tau)$ simultaneously influence 
+all three behaviors.
+
+Regardless of the precise causal structure (whether incorrect reasoning leads 
+to code failures, or incorrect code leads to incorrect reasoning) it is clear 
+that improving the code pass rate should monotonically improve downstream 
+accuracy on math benchmarks. If we denote the final answer as a function of 
+both the reasoning trajectory and tool outputs, 
+$\hat{y} = f(\tau_{\text{text}}, \tau_{\text{tool}})$, then in the idealized 
+limit where all code executes correctly and faithfully implements the intended 
+computations, the remaining error is attributable purely to high-level 
+reasoning. In other words, raising 
+$\mathbb{P}(\text{code pass} \mid x)$ for all tasks $x$ contracts the space of 
+possible failure modes and simplifies the RL objective.
+
+These observations motivate ReTool-MA, a multi-agent extension that 
+explicitly decomposes the monolithic policy into separate roles: 
+\begin{itemize}
+  \item \emph{Planner} responsible for high-level reasoning and tool specifications, 
+  \item \emph{Executor} responsible solely for synthesizing and running code, 
+  \item \emph{Verifier} responsible for checking consistency between the problem, plan, and tool outputs.
+\end{itemize}
+Conceptually, ReTool-MA can be viewed as introducing a form of 
+hierarchical or factored policy:
+\begin{equation}
+  \pi_\Theta(\tau) 
+  = \pi_{\theta_{\text{plan}}}^{\text{plan}} \;
+    \pi_{\theta_{\text{exec}}}^{\text{exec}} \;
+    \pi_{\theta_{\text{ver}}}^{\text{ver}},
+\end{equation}
+with distinct parameter sets 
+$\Theta = \{\theta_{\text{plan}}, \theta_{\text{exec}}, \theta_{\text{ver}}\}$ 
+and role-specific feedback. By separating planning, execution, and verification 
+into different agents, we aim to:
+\begin{itemize}
+  \item reduce the cognitive load and effective action dimensionality for each 
+        policy,
+  \item improve credit assignment by associating tool-execution failures 
+        primarily with the Executor (and its inputs), and
+  \item stabilize code pass rates even on trajectories where the Planner's 
+        reasoning is imperfect.
+\end{itemize}
+Our central hypothesis is that this architectural factorization will
+increase overall code pass rates, particularly on difficult problems, and 
+translate these gains into higher pass@1 accuracy.
 
 \section{ReTool-MA Methodology}
-Building on the ReTool observations, our system explicitly decomposes the policy into 
-dedicated Planner, Executor, and Verifier roles implemented with MARTI's 
-multi-agent workflow engine. Each agent is backed by a Qwen2.5 reasoning model, but the 
-workflow orchestrates their interaction through a directed graph, tool calls, and 
-role-specific rewards.
+We implement the dedicated Planner, Executor, and Verifier roles using MARTI
+\citep{marti2025}, a general-purpose multi-agent workflow engine. 
+Due to compute budgets, each agent is backed by a Qwen2.5-3B-Instruct \citep{qwen2.5, qwen2}
+reasoning model.The workflow orchestrates their interaction through a directed 
+graph, tool calls, and role-specific rewards.
 
 \subsection{Role Decomposition and MARTI Integration}
 We instantiate a custom workflow 
@@ -87,54 +388,142 @@ must emit a structured JSON plan containing free-form reasoning, a high-level co
 and the anticipated numerical quantity. The Executor is prompted with the Planner JSON and 
 is only allowed to emit executable Python. Finally, the Verifier consumes the original problem, 
 Planner justification, and the Executor's code transcript to decide whether the trajectory should 
-terminate or request revisions.
-
-The workflow returns a full trajectory trace, including intermediate prompts, code snippets, 
-tool metadata, and a compact metrics object. During offline evaluation (and later RL training) we 
-log aggregate summaries such as accuracy, average number of tool calls, and code pass rates split 
-by correct vs.\ incorrect final answers. These summaries are written to \texttt{results.json} and 
-\texttt{summary.json}, mirroring the statistical diagnostics that motivated ReTool.
+terminate or request revisions. The workflow returns a full trajectory trace, including 
+intermediate prompts, code snippets, tool metadata, and a compact metrics object.
 
 \subsection{Local Code Execution and Instrumentation}
 To avoid dependence on remote execution services, we implemented a lightweight 
 \texttt{local\_python} tool that drops code into a temporary directory, runs the repository 
 Python interpreter with strict timeouts, captures stdout/stderr, and cleans up artifacts. The tool 
 is registered via MARTI's \texttt{ToolManager}, so both inference and RL use the exact same sandbox. 
-Each tool call contributes to a global metrics collector (success/failure counts and latency) and the 
-workflow emits a per-problem diagnostic bundle:
-\[
-\text{code\_metrics} = 
-\left\{\text{attempts}, \text{passes}, \text{failures}, \text{pass rate conditioned on correctness}\right\},
-\]
-which is later consumed by our evaluator and report.
+Each tool call contributes to a global metrics collector.
 
 \subsection{Reward Shaping for Role-Specific Behaviors}
-The base ReTool reward is a sparse correctness indicator provided by the math grader. To inject 
-information earlier in the trajectory we added small shaping terms for each role:
-\begin{align}
-r_{\text{plan}} &= \alpha_{\text{succ}}\,\mathbb{1}\{\text{tool success}\}
-                  + \alpha_{\text{spec}}\,\mathbb{1}\{\text{tool output matches expected spec}\}
-                  - \alpha_{\text{fail}}\,\mathbb{1}\{\text{tool failure}\}, \\
-r_{\text{exec}} &= \beta_{\text{succ}}\,\mathbb{1}\{\text{tool success}\}
-                  + \beta_{\text{align}}\,\mathcal{O}(\text{plan},\text{code})
-                  - \beta_{\text{fail}}\,\mathbb{1}\{\text{tool failure}\}, \\
-r_{\text{ver}}  &= r_{\text{final}}
-                  - \gamma_{\text{miss}}\,\mathbb{1}\{\text{accepted wrong tool output}\}
-                  - \gamma_{\text{reject}}\,\mathbb{1}\{\text{rejected correct tool output}\}.
-\end{align}
-The overlap term $\mathcal{O}(\text{plan},\text{code}) \in [0,1]$ measures lexical agreement 
-between the Planner's \texttt{code\_plan} and the Executor's snippet, so the Executor is 
-rewarded for adhering to specifications rather than blindly solving the problem. Reward values are 
-clamped to $[-1,1]$ so that shaping remains a gentle nudge around the sparse terminal signal. The 
-intuitive effect is that the Planner is nudged to produce executable specifications, the Executor 
-to write code that mirrors those specifications, and the Verifier to double-check whether the 
-tool trace actually solves the problem before committing to a final answer.
+The base ReTool reward is a sparse terminal correctness signal provided by the
+math grader, where each episode receives $r_{\mathrm{env}} \in \{+1,-1\}$ depending on
+whether the final answer is correct. To provide more informative gradients and to 
+force true role specialization, we introduce small additional reward terms that
+are applied locally at each tool invocation.
 
-In preliminary AMC trials the shaped rewards immediately highlight the failure mode we observed in 
-ReTool: the Executor achieves a perfect tool pass rate even on incorrect trajectories, but the 
-Verifier receives explicit penalties when it accepts those incorrect tool outputs. This should 
-encourage the Verifier to demand revisions in future RL training rather than rubber-stamping every 
-tool call, aligning with the cognitive separation goals of ReTool-MA.
+Let $t$ index tool invocations within a trajectory and denote
+$\mathbbm{1}[\cdot]$ for the indicator function. For the Planner, Executor, and
+Verifier we define rewards
+\begin{align}
+  r^{\mathrm{plan}}_t
+    &= \alpha_{\mathrm{succ}} \, \mathbbm{1}\{\text{tool\_succ}_t\}
+     + \alpha_{\mathrm{spec}} \, \mathbbm{1}\{\text{spec\_match}_t\}
+     - \alpha_{\mathrm{fail}} \, \mathbbm{1}\{\text{tool\_fail}_t\}, \\
+  r^{\mathrm{exec}}_t
+    &= \beta_{\mathrm{succ}} \, \mathbbm{1}\{\text{tool\_succ}_t\}
+     + \beta_{\mathrm{align}} \, \mathcal{O}\bigl(c_t^{\mathrm{plan}}, c_t^{\mathrm{exec}}\bigr)
+     - \beta_{\mathrm{fail}} \, \mathbbm{1}\{\text{tool\_fail}_t\}, \\
+  r^{\mathrm{ver}}_t
+    &= \gamma_{\mathrm{final}} \, r_{\mathrm{env}} \, \mathbbm{1}\{t = T\}
+     - \gamma_{\mathrm{miss}} \, \mathbbm{1}\{\text{accepted\_incorrect}_t\}
+     - \gamma_{\mathrm{reject}} \, \mathbbm{1}\{\text{rejected\_correct}_t\},
+\end{align}
+where $c_t^{\mathrm{plan}}$ is the Planner's structured code sketch at step $t$,
+$c_t^{\mathrm{exec}}$ is the Executor's concrete Python snippet, and
+$T$ denotes the index of the final Verifier decision. The overlap term
+$\mathcal{O}(c_t^{\mathrm{plan}}, c_t^{\mathrm{exec}}) \in [0,1]$ measures the
+lexical agreement between the Planner's specification and the Executor's code
+(e.g., normalized token-level overlap). This encourages the Executor to follow
+Planner instructions rather than independently solving the problem.
+
+For each role $k \in \{\mathrm{plan},\mathrm{exec},\mathrm{ver}\}$, the total return is
+\begin{equation}
+  R^{k} = r_{\mathrm{env}} + \sum_{t} r^{k}_t,
+\end{equation}
+with all coefficients $\alpha_\cdot, \beta_\cdot, \gamma_\cdot$ chosen such that
+$|r^{k}_t| \ll |r_{\mathrm{env}}|$. In practice we clip the shaped rewards to the
+interval $[-1,1]$ so that they act as a gentle preference over trajectories that
+already achieve high terminal reward, rather than overwhelming the objective.
+
+Intuitively, these terms encourage the Planner to emit executable tool
+specifications, the Executor to produce code that both executes successfully and
+tracks those specifications, and the Verifier to catch inconsistencies between
+tool outputs and the global reasoning state. 
+
+Due to compute constraints, we were unable to run an exhaustive hyperparameter sweep
+over the role-specific reward coefficients. Instead, we expirimented with a small number of
+plausible settings on preliminary runs over both AMC 12 2024 and 2025 datasets, and selected
+the configuration that yielded the highest code pass rates on held-out validation problems.
+The final coefficients used in our experiments are:
+\begin{itemize}
+  \item Planner: $\alpha_{\mathrm{succ}} = 0.2$, 
+    $\alpha_{\mathrm{spec}} = 0.1$, $\alpha_{\mathrm{fail}} = 0.2$,
+  \item Executor: $\beta_{\mathrm{succ}} = 0.3$, 
+    $\beta_{\mathrm{align}} = 0.15$, $\beta_{\mathrm{fail}} = 0.3$,
+  \item Verifier: $\gamma_{\mathrm{final}} = 1.0$, 
+    $\gamma_{\mathrm{miss}} = 0.2$, $\gamma_{\mathrm{reject}} = 0.2$.
+\end{itemize}
+
+\section{Results}
+
+We evaluate ReTool-MA on a held-out set of AIME problems and compare its
+performance to the original ReTool framework. Table ~\ref{tab:ma_results} 
+summarizes the observed pass@1 accuracy and code pass rate for both systems.
+
+\begin{table}[htbp]
+\centering
+\caption{Comparison between ReTool and ReTool-MA.}
+\label{tab:ma_results}
+\begin{tabular}{lcc}
+\toprule
+{} & \textbf{ReTool} & \textbf{ReTool-MA} \\
+\midrule
+pass@1                & 0.581 & 0.160 \\
+code pass rate        & 0.930 & 0.860 \\
+model                 & Qwen2.5--32B & Qwen2.5--3B \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Direct comparison between ReTool-MA and the original ReTool is not strictly 
+fair, as the two systems use models with vastly different capacities. ReTool 
+is built on a 32B-parameter backbone, whereas ReTool-MA is implemented using 
+a 3B model. This gap in scale has a substantial effect on reasoning ability, 
+especially as AIME problems are known to be extremely sensitive to reasoning
+strength, long-horizon planning, and multi-step derivations. In such settings, 
+model size correlates strongly with pass@1 accuracy, and large models outperform 
+small ones by wide margins.
+
+Given this, the low pass@1 accuracy of ReTool-MA is expected and should not be 
+interpreted as evidence against the multi-agent architecture. Instead, the key 
+result lies in the model's tool-use robustness. Despite being orders
+of magnitude smaller, ReTool-MA achieves a notably high code execution success 
+rate of 0.86, only moderately below the 0.93 achieved by the much larger ReTool 
+model. This suggests that the multi-agent decompisition, in particular the 
+dedicated Executor role, helps maintain code reliability even when the 
+underlying reasoning model is substantially weaker.
+
+\section{Discussion}
+
+The evaluation presented in this work highlights both the promise and the 
+limitations of the ReTool-MA framework. Despite weaker reasoning 
+capacity, the 3B ReTool-MA model is still able to maintain a relatively high code 
+execution success rate, supporting the central motivation behind 
+our approach, that decomposing monolithic RL into a multi-agent system 
+has the potential to improve upon tool-use gains observed in ReTool.
+
+Our work leads to several key takeaways:
+\begin{itemize}
+    \item We successfully created a functional multi-agent adaptation of the 
+    ReTool framework using MARTI, demonstrating that role decomposition can be 
+    operationalized in practice.
+    \item We observed that code executability remains high under multi-agent 
+    decomposition, even for a small 3B backbone model. This supports our goal of 
+    separating executable correctness from reasoning correctness.
+\end{itemize}
+
+Several promising future directions emerge from this work. A natural next step is to run 
+controlled experiments where ReTool and ReTool-MA are evaluated using 
+backbone models of the same size. This would isolate the effect of the 
+multi-agent architecture from the confounding effect of model scale.
+More broadly, the current implementation uses manually designed shaping terms for Planner, 
+Executor, and Verifier roles. Integrating an LLM-as-Judge module (supported natively 
+in MARTI) would allow more flexible, semantic, and context-aware reward 
+generation, reducing the need for hand-crafted signals.
 
 \bibliography{references}
 
