@@ -1,5 +1,9 @@
 # ReTool-MA
 
+## Overview
+
+ReTool-MA is a multi-agent reinforcement learning framework that extends the ReTool [Feng et al., 2025]approach with a collaborative Planner-Executor-Verifier workflow. The system trains language models to solve mathematical reasoning tasks. Built on the MARTI framework, it enables efficient RL training with role-specific rewards shaping.
+
 ## Installation
 
 ### Prerequisites
@@ -73,7 +77,7 @@ python -m marti.cli.commands.test_new \
 - Results for each problem land in `MARTI/ckpt/results.json` and `MARTI/ckpt/summary.json`. The summary aggregates final accuracy, code execution pass rates, the conditional pass rates for correct vs. incorrect trajectories, and the per-role shaping rewards.
 
 ### Full training run
-For a longer RL run on the same workflow, first install flash-attn (ensure torch is installed first):
+For a longer RL run on the same workflow, first install flash-attn (ensure torch is already installed):
 ```bash
 uv pip install --no-build-isolation flash_attn==2.7.0.post2
 ```
@@ -91,3 +95,9 @@ bash scripts/run_train_retool_ma.sh $MODEL_PATH $WANDB_API_KEY
 ```
 
 The script wraps `python -m marti.cli.commands.train --config-name ma_retool_ma` with resource settings that fit a single RTX 5090 (one vLLM engine, small rollout batches) and streams logs/checkpoints to `MARTI/outputs` plus W&B/TensorBoard.
+
+## Research & Methodology
+
+For detailed information about the project methodology and results:
+- **Paper**: See `ReTool-MA.pdf` in the project root
+- **Presentation**: See `ReTool-MA Slides.pdf` in the project root
